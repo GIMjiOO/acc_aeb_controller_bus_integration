@@ -1,0 +1,27 @@
+<launch>
+  <!-- Live camera test — real YOLO objects + simulated vehicle dynamics.
+       Objects come from the YOLO team's machine over ROS network.
+       This node handles ego speed and lane stubs only.
+
+  Usage:
+    roslaunch acc_aeb_controller live_test.launch
+    roslaunch acc_aeb_controller live_test.launch init_speed_kph:=30.0
+
+  Requires:
+    - roscore running on this machine (192.168.0.250)
+    - YOLO team publishing /perception/camera/tracked_objects from 192.168.0.105
+  -->
+
+  <arg name="init_speed_kph" default="0.0" doc="Initial ego speed in km/h"/>
+
+  <!-- ACC/AEB controller -->
+  <include file="$(find acc_aeb_controller)/launch/acc_aeb_controller.launch"/>
+
+  <!-- Vehicle plant: integrates /control_value -> /VCU_Data + fake lane stubs -->
+  <node pkg="acc_aeb_controller" type="vehicle_plant.py"
+        name="vehicle_plant" output="screen">
+    <param name="dt"             value="0.05"/>
+    <param name="init_speed_kph" value="$(arg init_speed_kph)"/>
+  </node>
+
+</launch>

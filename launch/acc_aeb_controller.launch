@@ -1,0 +1,91 @@
+<launch>
+  <!-- ACC/AEB longitudinal controller for the NPUST heavy bus.
+       Only the most safety-relevant parameters are surfaced here; everything
+       else falls back to acc_aeb::defaults in types.h. Full list in README. -->
+
+  <node pkg="acc_aeb_controller" type="acc_aeb_controller_node"
+        name="acc_aeb_controller" output="screen">
+
+    <!-- Control loop -->
+    <param name="dt_s"               value="0.05"/>   <!-- 20 Hz -->
+    <param name="target_kph"         value="25.0"/>
+
+    <!-- IMPORTANT: set this to match your tracker's vx convention.
+         true  = obj.vx is already relative to ego
+         false = obj.vx is world-frame absolute (ego is subtracted internally) -->
+    <param name="vx_is_relative"     value="false"/>
+
+    <!-- Following / spacing -->
+    <param name="time_gap_s"         value="2.0"/>
+    <param name="safe_base_m"        value="5.0"/>
+    <param name="latency_s"          value="0.5"/>
+
+    <!-- AEB thresholds -->
+    <param name="ttc_aeb_s"          value="1.5"/>
+    <param name="ttc_warn_s"         value="3.0"/>
+    <param name="ttc_warn_exit_s"    value="3.8"/>
+    <param name="aeb_dist_m"         value="8.0"/>
+    <param name="aeb_immediate_dist_m" value="4.0"/>
+    <!-- min_valid_x_m: NOT overridden here — defaults to 0.5 m (types.h).
+         Set to sensor minimum reliable range before vehicle deployment.
+         Do NOT raise this to mask perception false detections — fix the sensor instead. -->
+    <param name="a_aeb_max"          value="-5.5"/>
+
+    <!-- Vehicle / drivetrain -->
+    <param name="mass_kg"            value="10000.0"/>
+    <param name="wheel_r_m"          value="0.478"/>
+    <param name="gear_ratio"         value="6.5"/>
+    <param name="drivetrain_eff"     value="0.92"/>
+    <param name="motor_torque_max"   value="1200.0"/>
+    <param name="brake_g_max"        value="0.60"/>
+
+    <!-- Safety watchdog & sensor freshness -->
+    <param name="watchdog_timeout_s" value="0.20"/>
+    <param name="sensor_timeout_s"   value="0.30"/>   <!-- camera staleness -->
+    <param name="radar_timeout_s"    value="0.30"/>   <!-- radar staleness (degraded if stale, FAULT only if BOTH) -->
+    <param name="vcu_timeout_s"      value="0.30"/>   <!-- ego-speed (VCU) staleness -> FAULT -->
+    <param name="spinner_threads"    value="2"/>
+
+    <!-- Radar fusion -->
+    <!-- true  = radar vx is Doppler (relative to ego) — almost always correct -->
+    <!-- false = radar vx is world-frame absolute (ego is subtracted internally) -->
+    <param name="radar_vx_is_relative"  value="true"/>
+    <param name="radar_fusion_dedup_m"  value="2.0"/> <!-- objects within 2 m XY = same obstacle -->
+
+    <!-- Camera content-health warning threshold.
+         If camera keeps delivering empty arrays while ego is moving for longer than
+         this, a ROS_WARN is emitted every 10 s. NOT a FAULT (clear road is valid).
+         Increase if false positives appear on long straight stretches. -->
+    <param name="cam_health_timeout_s"  value="30.0"/>
+
+    <!-- Adjacent-lane cut-in zone width = factor × dynamic_half_w.
+         Objects between 1× and this factor × half-width are tracked for cut-in
+         awareness and reported in /diagnostics (adj_mio_x_m, adj_ttc_s).
+         They do NOT trigger AEB — only ego-lane objects do. -->
+    <param name="cut_in_lateral_factor" value="2.0"/>
+
+    <!-- Kalman filter process noise — increase q_x if filter lags sudden braking -->
+    <param name="q_x" value="0.5"/>
+    <param name="q_v" value="0.15"/>
+    <param name="q_a" value="0.05"/>
+
+    <!-- Fusion gate: max allowable range difference between camera MIO and radar MIO
+         before the radar update is skipped for that cycle.
+         If camera tracks a car at 25 m and radar locks onto a guardrail at 8 m,
+         the mismatch exceeds this gate and only the camera update is applied.
+         Increase if genuine targets are being rejected (sensor misalignment). -->
+    <param name="fusion_gate_m" value="3.0"/>
+
+    <!-- debug_stall_once_s: TEST ONLY. Leave unset on the vehicle. -->
+    <!-- <param name="debug_stall_once_s" value="0.5"/> -->
+
+    <!-- Add <remap> tags here if your stack uses different topic names.
+         Default topics: /VCU_Data,
+                         /perception/camera/tracked_objects,
+                         /perception/radar/tracked_objects,
+                         /perception/lanes/left, /perception/lanes/right,
+                         /planner/target_speed,
+                         /driver_override  (std_msgs/Bool — publish true to suspend ACC),
+                         /control_value -->
+  </node>
+</launch>

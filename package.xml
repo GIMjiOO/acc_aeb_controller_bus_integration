@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>acc_aeb_controller</name>
+  <version>16.0.0</version>
+  <description>
+    Adaptive Cruise Control / Autonomous Emergency Braking for the NPUST heavy
+    bus platform. Hard-real-time ROS 1 controller with zero hot-path heap,
+    lock-free watchdog, and 5-state longitudinal FSM.
+  </description>
+
+  <maintainer email="gim2548@gmail.com">NPUST Bus Team</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>pro_can</depend>
+  <depend>npust_bus_msgs</depend>
+</package>

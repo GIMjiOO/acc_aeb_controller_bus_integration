@@ -19,9 +19,10 @@ enum class SmEvent : uint8_t { NONE, ENTERED_FAULT, FAULT_RECOVERED };
 
 struct ControlResult {
     ActCmd  act{};                      // actuator command (valid only if accel_cmd is finite)
-    double  accel_cmd = 0.0;            // jerk-limited longitudinal accel (NaN => node safe-stops)
-    State   state     = State::CRUISE;
-    SmEvent event     = SmEvent::NONE;
+    double  accel_cmd     = 0.0;        // jerk-limited longitudinal accel (NaN => node safe-stops)
+    double  target_speed  = 0.0;        // m/s — integrated from accel_cmd; published to /control_value
+    State   state         = State::CRUISE;
+    SmEvent event         = SmEvent::NONE;
 };
 
 class StateMachine {

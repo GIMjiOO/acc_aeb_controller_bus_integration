@@ -125,7 +125,7 @@ public:
         ctrl_spinner_ = std::make_unique<ros::AsyncSpinner>(1, &ctrl_queue_);
         ctrl_spinner_->start();
 
-        ROS_INFO("[ACC/AEB] v16.0 ready | %.0f kg | cam_vx=%s rad_vx=%s | coast=%.2f/%.2f s | spinners=%d | wd=%.0f ms | vcu_to=%.0f ms",
+        ROS_INFO("[ACC/AEB] v16.1 ready | %.0f kg | cam_vx=%s rad_vx=%s | coast=%.2f/%.2f s | spinners=%d | wd=%.0f ms | vcu_to=%.0f ms",
                  p_.mass_kg,
                  p_.vx_is_relative       ? "relative" : "world",
                  p_.radar_vx_is_relative ? "relative" : "world",
@@ -176,13 +176,13 @@ private:
         // Constant-payload safe-stop messages (only header.stamp varies). Each is
         // owned by exactly one thread (loop_stop_msg_ -> control loop / main;
         // wd_stop_msg_ -> watchdog), so reuse is race-free.
-        loop_stop_msg_.acc_command_value            = 0.0;
-        loop_stop_msg_.brake_command_value          = safe_brake_g_;
         loop_stop_msg_.steering_wheel_command_value = 0.0;
+        loop_stop_msg_.target_speed_value           = 0.0;
+        loop_stop_msg_.mode_value                   = "FAULT";
 
-        wd_stop_msg_.acc_command_value            = 0.0;
-        wd_stop_msg_.brake_command_value          = safe_brake_g_;
         wd_stop_msg_.steering_wheel_command_value = 0.0;
+        wd_stop_msg_.target_speed_value           = 0.0;
+        wd_stop_msg_.mode_value                   = "FAULT";
     }
 
     void initDiagMsgs() {
@@ -509,9 +509,9 @@ private:
                                   (cr.state == State::CRUISE || cr.state == State::FOLLOW);
         if (suppress_acc) sm_.onDriverOverride();
 
-        ctrl_msg_.header.stamp        = now;
-        ctrl_msg_.acc_command_value   = suppress_acc ? 0.0 : cr.act.torque_nm;
-        ctrl_msg_.brake_command_value = suppress_acc ? 0.0 : cr.act.brake_g;
+        ctrl_msg_.header.stamp       = now;
+        ctrl_msg_.target_speed_value = suppress_acc ? ego_v : cr.target_speed;
+        ctrl_msg_.mode_value         = toString(cr.state);   // inspect-only on their side
         // steering already zeroed in initControlMsgs()
         pub_ctrl_.publish(ctrl_msg_);
 

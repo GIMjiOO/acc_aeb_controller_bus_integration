@@ -83,7 +83,8 @@ ControlResult StateMachine::step(const MioResult& mio, const KinResult& kin,
     // issues a safe stop instead of publishing r.act.
     if (!std::isfinite(cmd_jerk)) return r;
 
-    r.act = mapToActuators(cmd_jerk, state_, dt);
+    r.act          = mapToActuators(cmd_jerk, state_, dt);
+    r.target_speed = std::max(0.0, ego_v + cmd_jerk * dt);
     return r;
 }
 

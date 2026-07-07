@@ -86,7 +86,7 @@ ACC/AEB Controller node
   │  mapToActuators()    THROTTLE/COAST/BRAKE + rate limits     │
   │       │                                                     │
   │       ▼                                                     │
-  │  publish → /control_value  (torque_nm, brake_g)             │
+  │  publish → /control_value  (target_speed_value, mode_value) │
   │          → /diagnostics                                     │
   └─────────────────────────────────────────────────────────────┘
 
@@ -97,8 +97,10 @@ ACC/AEB Controller node
 
 Downstream
 ══════════════════════════════════════════════════════════════════
-  /control_value → CAN gateway → motor controller + brake actuator
+  /control_value → bus integration layer → target-speed tracking
 ```
+
+**Output note:** `/control_value` publishes only `target_speed_value` (m/s, integrated from the jerk-limited accel command) and `mode_value` (current FSM state as a string, inspect-only). `torque_nm`/`brake_g` are still computed internally every tick via `mapToActuators()` (used for jerk-limited rate limiting and bench logging) but are **not** published — this is a deliberate replacement per the bus team's integration requirements, not an addition. See [§10 Actuator Mapping](#10-actuator-mapping) and [§12 Topics](#12-topics).
 
 ### Package layout
 
@@ -177,14 +179,17 @@ Every `dt_s` seconds (default 50 ms, 20 Hz), the control-spinner thread executes
 
 8. Camera health      Warn if camera sends empty arrays while ego is moving > cam_health_timeout_s.
 
-9. StateMachine::step FSM transition + PI/PID control + jerk limit → accel_cmd + actuator cmd.
+9. StateMachine::step FSM transition + PI/PID control + jerk limit → accel_cmd,
+                       target_speed (integrated from accel_cmd), and actuator cmd
+                       (torque_nm/brake_g — computed for rate limiting + logging).
 
-10. Driver override   If override active in CRUISE/FOLLOW: publish (0 torque, 0 brake).
+10. Driver override   If override active in CRUISE/FOLLOW: publish target_speed_value = ego_v
+                       (hold current speed, no ACC-commanded acceleration).
                        AEB/WARN/FAULT remain fully armed.
 
 11. NaN guard         If accel_cmd is non-finite → publishLoopSafeStop() + pipeline reset.
 
-12. Publish           /control_value  (torque_nm or brake_g)
+12. Publish           /control_value  (target_speed_value, mode_value)
                        /diagnostics    (18 key-value fields + state)
 ```
 
@@ -247,10 +252,10 @@ Five operational states. The node starts in **FAULT**; the first real tick trans
 
 | State | Override active? | Output |
 |---|---|---|
-| CRUISE / FOLLOW | Yes | 0 torque, 0 brake (driver has authority) |
-| WARN / AEB | Yes | Full brake command **always active** — collision protection overrides the driver |
-| FAULT (sensor stale) | Yes | 0 torque, 0 brake — driver can drive the bus freely; WARNING logged every 5 s that AEB is non-functional |
-| FAULT (sensor stale) | No | Fault brake (`a_fault_brake`) applied as normal |
+| CRUISE / FOLLOW | Yes | `target_speed_value = ego_v` (hold current speed — driver has authority) |
+| WARN / AEB | Yes | Full brake command **always active** (target speed integrates the fault/AEB decel) — collision protection overrides the driver |
+| FAULT (sensor stale) | Yes | FSM is shielded from the stale-sensor signal and stays in CRUISE, so `target_speed_value = ego_v` — driver can drive the bus freely; WARNING logged every 5 s that AEB is non-functional |
+| FAULT (sensor stale) | No | Fault brake (`a_fault_brake`) applied as normal — `target_speed_value` decays toward 0 |
 
 When sensors recover while override is still active, the controller exits FAULT automatically after `fault_recovery_s` and AEB/WARN re-arm — no driver action required.
 
@@ -490,7 +495,7 @@ State transitions reset integrators (`integral_cruise_`, `integral_follow_`) to 
 
 ## 10. Actuator Mapping
 
-`StateMachine::mapToActuators()` converts the jerk-limited acceleration command into torque (Nm) and brake (g):
+`StateMachine::mapToActuators()` converts the jerk-limited acceleration command into torque (Nm) and brake (g). **These values are computed every tick but are not published to `/control_value`** (see [§12 Topics](#12-topics)) — they exist to drive the COAST/THROTTLE/BRAKE hysteresis and rate limiting below, and are logged to the console for bench comparison against the published `target_speed_value`.
 
 ### Actuator mode hysteresis
 
@@ -541,7 +546,7 @@ if frozen_ns > watchdog_timeout_ns:
     if not latched:
         Set watchdog_tripped_ = true    (control loop reads this on resume)
         Increment watchdog_trip_count_
-        Publish wd_stop_msg_ on /control_value   (0 torque, safe_brake_g)
+        Publish wd_stop_msg_ on /control_value   (target_speed_value=0, mode_value="FAULT")
         Publish ERROR on /diagnostics (acc_aeb_watchdog)
         latch = true
     else if (now_ns − last_pub_ns) ≥ refresh_ns:
@@ -583,7 +588,7 @@ The watchdog detects a **hung control thread while other threads still run**. It
 | Subscribe | `/perception/lanes/right` | `npust_bus_msgs/LanePolynomial` | Right lane boundary polynomial. Same validation. |
 | Subscribe | `/planner/target_speed` | `std_msgs/Float32` | Target speed in **m/s**, capped to `target_speed_mps`. Non-finite values rejected. |
 | Subscribe | `/driver_override` | `std_msgs/Bool` | `true` = driver has manual control. Suspends ACC (CRUISE/FOLLOW → neutral output). AEB/WARN remain armed. **FAULT braking is suppressed when the fault is sensor-driven** (stale perception or VCU) so the driver can operate the bus without autonomous braking fighting them — a WARNING is logged every 5 s that AEB is non-functional until sensors recover. AEB re-arms automatically as soon as sensors return healthy. |
-| Publish | `/control_value` | `pro_can::control_data` | `acc_command_value` (Nm torque) and `brake_command_value` (g). `steering_wheel_command_value` always 0. |
+| Publish | `/control_value` | `pro_can::control_data` | `target_speed_value` (m/s, integrated from the jerk-limited accel command) and `mode_value` (current FSM state name, e.g. `"CRUISE"`/`"AEB"` — inspect-only, not load-bearing on the bus side). Replaces the earlier torque/brake output per the bus team's integration requirements; `control_data.msg` no longer has `acc_command_value`/`brake_command_value`/`steering_wheel_command_value` fields. |
 | Publish | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Two status entries: `acc_aeb_controller` (main) and `acc_aeb_watchdog` (watchdog-only, separate so it is visible even when the control loop is dead). |
 
 Use `<remap>` tags in the launch file to adapt to different topic names in your stack.
@@ -810,7 +815,7 @@ Published by the watchdog thread — visible even when the control loop is froze
 ### Build
 
 ```bash
-cd ~/catkin_ws00
+cd ~/bus_ws
 catkin_make          # or: catkin build
 source devel/setup.bash
 ```
@@ -854,32 +859,18 @@ Tests cover:
 |---|---|
 | `SelectMio.*` | Both sensors timed out → invalid; camera in-lane; object outside lane rejected; radar fills camera stale gap; dedup skips sub-threshold camera return |
 | `MioTracker.*` | Grace v_abs consistent with v_rel; grace v_abs reflects current ego_v |
-| `StateMachine.*` | FAULT reaches full brake at `jerk_warn` rate; WARN and FAULT use identical jerk rate; AEB command is immediate (no jerk limit) |
-| `Kinematics.*` | Stationary-object backstop triggers AEB-level TTC |
+| `StateMachine.*` | FAULT reaches full brake at `jerk_warn` rate; WARN and FAULT use identical jerk rate; AEB command is immediate (no jerk limit); sensor-OK prevents immediate FAULT |
+| `Kinematics.*` | Stationary-object backstop triggers AEB-level TTC; linear TTC fallback when `a_rel` is zero |
 | `KalmanTest.*` | Predict closes range; update pulls toward measurement; radar-only converges in velocity; covariance diagonal stays positive |
 | `FusionGate.*` | Agreement fuses both sensors; mismatch skips radar; radar-only always updates; zero-variance fallback produces no NaN |
+| `SelectAdjacentMio.*` | In-lane object not reported as adjacent; object beyond cut-in zone ignored; adjacent object detected; radar fills adjacent zone when camera stale |
 | `Efficiency.*` | 2000 full-pipeline iterations complete in < 5 ms average (budget << 1 ms in practice) |
 
 Tests are **ROS-free** for the core logic layers (`types.h`, `math_utils.h`, `kinematics.*`, `state_machine.*`). Only `ros::Time::init()` is called for `ROS_WARN_THROTTLE` in `kinematics.cpp`.
 
-### Closed-loop simulation (`acc_aeb_sim`)
+### Closed-loop bench testing
 
-Located in `src/acc_aeb_sim/`. Runs a closed-loop bench simulation without hardware.
-
-```bash
-roslaunch acc_aeb_sim sim_test.launch scenario:=<N>
-```
-
-| Scenario | ID | Description |
-|---|---|---|
-| `FREE_CRUISE` | 0 | No obstacle. Verify ego ramps to 25 km/h and cruises. |
-| `FOLLOW_STEADY` | 1 | Slow obstacle at 20 m. Verify gap maintenance in FOLLOW state. |
-| `WARN_AEB_STOP` | 2 | Stationary obstacle at 55 m. Full state chain: CRUISE → FOLLOW → WARN → AEB → stop. |
-| `EMERGENCY_AEB` | 3 | Obstacle appears at 12 m at 40 km/h. TTC ≈ 1.08 s → bypass confirm gate → AEB on first frame. |
-| `VCU_DROPOUT` | 4 | VCU silent 0.8 s (> vcu_timeout 0.3 s) → FAULT; resumes → FAULT_RECOVERED after 1 s. |
-| `OBJ_DROPOUT` | 5 | Object tracker silent 0.6 s (> sensor_timeout 0.3 s) → FAULT; resumes → FAULT_RECOVERED. |
-
-The simulator publishes synthetic VCU, camera objects, and lane polynomials, and integrates the received `/control_value` through simple vehicle dynamics to close the loop.
+There is no dedicated `acc_aeb_sim` package in this workspace. For closed-loop testing without a real VCU or CAN gateway, use [live_test.launch](#build-and-run) together with [vehicle_plant.py](#vehicle_plantpy), which integrates the published `/control_value` back into `/VCU_Data` through simple 1D vehicle dynamics — see [Developer Tools](#17-developer-tools). Drive scenarios (free cruise, following, AEB stop, sensor dropouts) by publishing synthetic camera/radar objects and lane polynomials, or by using [fake_vcu.py](#fake_vcupy) to control ego speed directly.
 
 ---
 
@@ -924,24 +915,27 @@ Subscribes to `/perception/camera/tracked_objects`, `/perception/radar/tracked_o
 
 ### `vehicle_plant.py`
 
-Simple 1D vehicle dynamics model. Integrates `/control_value` → `/VCU_Data`.
+Simple 1D vehicle dynamics model. Tracks the `target_speed_value` published on `/control_value` and integrates the result into `/VCU_Data`.
 
 ```bash
 # Usually launched via live_test.launch; can also be run standalone:
 rosrun acc_aeb_controller vehicle_plant.py _dt:=0.05 _init_speed_kph:=0.0
 ```
 
-Physics:
+Physics (P-controlled speed tracking, matching the node's new `target_speed_value`/`mode_value` output):
 
 ```
-if brake_g > 0.002:  accel = −brake_g × 9.80665
-elif torque > 1.0:   accel = min(torque × ACCEL_PER_TORQUE, 1.6 m/s²)
-else:                accel = −0.08 m/s²   (rolling resistance + drag)
+speed_err = target_speed_value − ego_v
+accel     = clamp(speed_err × SPEED_P_GAIN, −MAX_DECEL_MPS2, MAX_ACCEL_MPS2)
+            (SPEED_P_GAIN=2.0, MAX_ACCEL_MPS2=1.6, MAX_DECEL_MPS2=5.5)
+
+if |speed_err| < 0.05 and ego_v > 0:
+    accel = −DRAG_MPS2   (0.08 m/s² — rolling resistance + drag, coast when on-target)
 
 ego_v = max(0, ego_v + accel × dt)
 ```
 
-Vehicle constants match the controller defaults (`mass=10000 kg`, `wheel_r=0.478 m`, `gear_ratio=6.5`, `drv_eff=0.92`).
+This is a plant model standing in for the bus's own speed-tracking control loop — it no longer models torque/brake actuation, since the node no longer publishes those.
 
 ---
 
@@ -957,7 +951,7 @@ Vehicle constants match the controller defaults (`mass=10000 kg`, `wheel_r=0.478
 
 5. **Node starts in FAULT.** The controller applies `a_fault_brake` deceleration until both VCU and at least one perception sensor have each published at least once, and `fault_recovery_s` has elapsed. Ensure sensors are running before the controller is expected to control motion.
 
-6. **Driver override** (`/driver_override`, `std_msgs/Bool = true`) suspends ACC (CRUISE/FOLLOW → 0 torque, 0 brake). **AEB and WARN always remain armed.** FAULT braking is suppressed when the fault source is stale sensors — this lets the driver operate the bus without autonomous braking fighting them. A `ROS_WARN_THROTTLE(5 s)` is emitted every 5 seconds while this condition holds, stating that AEB is non-functional. AEB re-arms automatically as soon as sensors recover (no driver action required). Wire the override topic from the VCU's brake-pedal or throttle-override signal.
+6. **Driver override** (`/driver_override`, `std_msgs/Bool = true`) suspends ACC (CRUISE/FOLLOW → `target_speed_value = ego_v`, i.e. hold current speed). **AEB and WARN always remain armed.** FAULT braking is suppressed when the fault source is stale sensors — this lets the driver operate the bus without autonomous braking fighting them. A `ROS_WARN_THROTTLE(5 s)` is emitted every 5 seconds while this condition holds, stating that AEB is non-functional. AEB re-arms automatically as soon as sensors recover (no driver action required). Wire the override topic from the VCU's brake-pedal or throttle-override signal.
 
 ---
 
@@ -977,7 +971,7 @@ Vehicle constants match the controller defaults (`mass=10000 kg`, `wheel_r=0.478
 | Message | Fields used | Notes |
 |---|---|---|
 | `pro_can/VCU` | `MotorVelocity` (float, km/h) | Non-finite values rejected; freshness clock not refreshed on rejection |
-| `pro_can/control_data` | `header`, `acc_command_value` (Nm), `brake_command_value` (g), `steering_wheel_command_value` (always 0) | |
+| `pro_can/control_data` | `header`, `target_speed_value` (float64, m/s), `mode_value` (string, FSM state name) | Message no longer carries `acc_command_value`/`brake_command_value`/`steering_wheel_command_value` — see [§12 Topics](#12-topics) |
 | `npust_bus_msgs/TrackedObject` | `x`, `y`, `vx` (float64, m and m/s), `id` (int32), `x_var`, `vx_var` (float64, m² and m²/s²) | Zero variance triggers fallback default with throttled warning |
 | `npust_bus_msgs/LanePolynomial` | `a`, `b`, `c` (float64, polynomial coefficients), `is_valid` (bool) | Validated: `|a| ≤ max_lane_curve_a`, `|b| ≤ max_lane_heading_b` |
 

@@ -171,18 +171,14 @@ private:
     enum WdDiagIdx { WD_FROZEN_S = 0, WD_TRIP_COUNT, WD_COUNT };
 
     void initControlMsgs() {
-        ctrl_msg_.steering_wheel_command_value = 0.0;   // longitudinal node: steering is constant zero
-
         // Constant-payload safe-stop messages (only header.stamp varies). Each is
         // owned by exactly one thread (loop_stop_msg_ -> control loop / main;
         // wd_stop_msg_ -> watchdog), so reuse is race-free.
-        loop_stop_msg_.steering_wheel_command_value = 0.0;
-        loop_stop_msg_.target_speed_value           = 0.0;
-        loop_stop_msg_.mode_value                   = "FAULT";
+        loop_stop_msg_.target_speed_value = 0.0;
+        loop_stop_msg_.mode_value         = "FAULT";
 
-        wd_stop_msg_.steering_wheel_command_value = 0.0;
-        wd_stop_msg_.target_speed_value           = 0.0;
-        wd_stop_msg_.mode_value                   = "FAULT";
+        wd_stop_msg_.target_speed_value   = 0.0;
+        wd_stop_msg_.mode_value           = "FAULT";
     }
 
     void initDiagMsgs() {

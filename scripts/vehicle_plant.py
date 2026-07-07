@@ -13,23 +13,18 @@ a consistent vehicle model whether running scenarios or live camera tests.
 import rospy
 from pro_can.msg import VCU, control_data
 
-MASS_KG          = 10000.0
-WHEEL_R_M        = 0.478
-GEAR_RATIO       = 6.5
-DRV_EFF          = 0.92
-G_MPS2           = 9.80665
 MPS_TO_KPH       = 3.6
-ACCEL_PER_TORQUE = (GEAR_RATIO * DRV_EFF) / (MASS_KG * WHEEL_R_M)
-
 MAX_ACCEL_MPS2   = 1.6    # physical ceiling for drive
+MAX_DECEL_MPS2   = 5.5    # AEB-level decel ceiling
 DRAG_MPS2        = 0.08   # rolling resistance + aero during coast
+SPEED_P_GAIN     = 2.0    # P-gain: how aggressively plant chases target_speed
 
 
 class VehiclePlant:
 
     def __init__(self):
-        self._torque_nm = 0.0
-        self._brake_g   = 0.0
+        self._target_v  = 0.0
+        self._mode      = "FAULT"
         self._ego_v     = 0.0
 
         dt_s            = float(rospy.get_param('~dt', 0.05))
@@ -46,16 +41,15 @@ class VehiclePlant:
                       init_kph, dt_s)
 
     def _ctrl_cb(self, msg):
-        self._torque_nm = msg.acc_command_value
-        self._brake_g   = msg.brake_command_value
+        self._target_v = msg.target_speed_value
+        self._mode     = msg.mode_value
 
     def _step(self):
-        if self._brake_g > 0.002:
-            accel = -self._brake_g * G_MPS2
-        elif self._torque_nm > 1.0:
-            accel = min(self._torque_nm * ACCEL_PER_TORQUE, MAX_ACCEL_MPS2)
-        else:
-            accel = -DRAG_MPS2
+        speed_err = self._target_v - self._ego_v
+        accel = speed_err * SPEED_P_GAIN
+        accel = max(-MAX_DECEL_MPS2, min(MAX_ACCEL_MPS2, accel))
+        if abs(speed_err) < 0.05 and self._ego_v > 0.0:
+            accel = -DRAG_MPS2   # coast when on-target
         self._ego_v = max(0.0, self._ego_v + accel * self._dt)
 
     def _pub_vcu(self):
@@ -70,9 +64,10 @@ class VehiclePlant:
             self._step()
             self._pub_vcu()
             if int(t / self._dt) % 20 == 0:  # status every 1 s
-                rospy.loginfo('[PLANT] ego=%.1f km/h  T=%.0f Nm  B=%.3f g',
+                rospy.loginfo('[PLANT] ego=%.1f km/h  target=%.1f km/h  mode=%s',
                               self._ego_v * MPS_TO_KPH,
-                              self._torque_nm, self._brake_g)
+                              self._target_v * MPS_TO_KPH,
+                              self._mode)
             t    += self._dt
             rate.sleep()
 
